@@ -1,0 +1,27 @@
+{
+  "name": "smart-commit",
+  "version": "1.0.0",
+  "description": "AI-powered git commit message generator using a local LLM. No API keys required.",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "smart-commit": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm run build"
+  },
+  "keywords": ["git", "commit", "ai", "llm", "cli", "conventional-commits"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "node-llama-cpp": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
