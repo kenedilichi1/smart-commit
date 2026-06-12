@@ -18,13 +18,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 const MODELS_DIR = resolveModelsDir();
 
-console.log(MODELS_DIR);
 function resolveModelsDir(): string {
   const xdgData = process.env["XDG_DATA_HOME"];
   if (xdgData) {
     return path.join(xdgData, "smart-commit", "models");
   }
-  return path.join(os.homedir(), "web_workspace", "smart_commit", "models");
+  return path.join(os.homedir(), ".local", "share", "smart-commit", "models");
 }
 
 const MODEL_NAME = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
