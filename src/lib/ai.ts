@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { styleText } from "node:util";
 import type { WorkerMessage, WorkerInput } from "../types/index.js";
+import type { ParsedCommitMessage } from "../lib/commit-message.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +18,7 @@ const INFERENCE_TIMEOUT_MS = Number(
 );
 
 export interface CommitMessageHandle {
-  promise: Promise<string>;
+  promise: Promise<ParsedCommitMessage>;
   kill: () => void;
 }
 
@@ -42,7 +43,7 @@ export function generateCommitMessage(input: WorkerInput): CommitMessageHandle {
     }
   };
 
-  const promise = new Promise<string>((resolve, reject) => {
+  const promise = new Promise<ParsedCommitMessage>((resolve, reject) => {
     const workerPath = path.join(__dirname, "../workers/ai-worker.js");
     child = fork(workerPath);
 
@@ -90,7 +91,10 @@ export function generateCommitMessage(input: WorkerInput): CommitMessageHandle {
           } else if (message.event === "inference_started") {
             spinnerId = setInterval(() => {
               process.stdout.write(
-                styleText("cyan", `\r${frames[frameIndex]} Generating commit message...`)
+                styleText(
+                  "cyan",
+                  `\r${frames[frameIndex]} Generating commit message...`,
+                ),
               );
               frameIndex = (frameIndex + 1) % frames.length;
             }, 80);
@@ -109,7 +113,13 @@ export function generateCommitMessage(input: WorkerInput): CommitMessageHandle {
 
         case "success":
           cleanup();
-          resolve(message.message);
+          // The worker already validated message.head against CC_REGEX
+          // before sending "success", so headValid is always true here.
+          resolve({
+            head: message.head,
+            body: message.body,
+            headValid: true,
+          });
           break;
 
         case "error":

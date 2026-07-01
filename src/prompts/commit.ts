@@ -3,23 +3,48 @@
 // =============================================================================
 // Edit this file to tune what the AI model is instructed to produce.
 // All three context signals (diff, branch, recent commits) flow through here.
+//
+// This file is ONLY responsible for building the prompt strings the model
+// sees. It does not parse or validate model output — that lives in
+// lib/commit-message.ts, which imports the contract constants (BODY_SENTINEL,
+// CC_REGEX) from here so the "shape we ask for" and "shape we parse" can
+// never drift apart.
 // =============================================================================
 
+/**
+ * The literal line the model must emit between the head and the body.
+ * Exported because lib/commit-message.ts needs the exact same string to
+ * split the raw response back apart.
+ */
+export const BODY_SENTINEL = "===BODY===";
+
 const SYSTEM_INSTRUCTION = `\
-You are an expert git commit message generator. Your ONLY output must be a \
-valid commit message in Conventional Commits format. Output nothing else — \
-no explanation, no markdown, no quotes.`;
+You are an expert git commit message generator. Your ONLY output must follow \
+the exact structure below. No explanation, no markdown, no quotes, no code \
+fences.`;
 
 const FORMAT_SPEC = `\
-FORMAT: 
-<type>(<scope>): <description>
+OUTPUT STRUCTURE (exactly this shape, nothing more):
 
-[optional body]
+<type>(<scope>): <description>
+${BODY_SENTINEL}
+- <bullet 1>
+- <bullet 2>
+- <bullet N>
+
+Line 1 is the HEAD. It must be a single line in Conventional Commits format.
+The line "${BODY_SENTINEL}" must appear exactly once, alone on its own line,
+immediately after the HEAD.
+Everything after that line is the BODY, as "- " bullet points, one per line.
 
 TYPES: feat | fix | refactor | perf | docs | style | test | chore | build | ci | revert
 SCOPE: the module, file, or area changed (optional but preferred)
-DESCRIPTION: imperative mood, lowercase, max 72 chars total
-BODY: detailed explanation of what changed and why. Use bullet points for multiple changes. Wrap at 72 chars.`;
+DESCRIPTION: imperative mood, lowercase, max 72 chars total (the whole head line)
+BODY: what changed and why, one bullet per logical change. Wrap each bullet at 72 chars.
+
+If the change is trivial (e.g. a one-line fix, a typo, a version bump), still \
+output the sentinel line but leave the body empty — i.e. output nothing after \
+"${BODY_SENTINEL}".`;
 
 const RULES = `\
 RULES:
@@ -28,19 +53,25 @@ RULES:
   e.g. "feature/user-auth" → scope "auth", "fix/api-timeout" → scope "api"
 - If recent commits follow a consistent scope naming pattern, match it
 - If multiple files changed, pick the most semantically significant scope
-- Add a body if the diff is complex and requires explanation. Skip the body for trivial changes.
-- Output EXACTLY the commit message. No markdown code blocks surrounding it.`;
+- Only add body bullets if the diff is complex and requires explanation.
+  Skip bullets entirely for trivial changes — but ALWAYS include the
+  "${BODY_SENTINEL}" line, even with nothing after it.
+- Never put the sentinel line, or any part of this structure, inside markdown
+  code fences.
+- Output EXACTLY the structure above. No extra commentary before or after.`;
 
 // -----------------------------------------------------------------------------
 // Few-shot examples — add more here to improve accuracy on your codebase.
-// Each entry is a { diff, branch, recentCommits, message } tuple shown to the
-// model verbatim. Keep these generic so they don't drift as the project evolves.
+// Each entry is a { diff, branch, recentCommits, head, bodyBullets } tuple
+// shown to the model verbatim. Keep these generic so they don't drift as the
+// project evolves.
 // -----------------------------------------------------------------------------
 const EXAMPLES: Array<{
   branch: string;
   recentCommits: string[];
   diff: string;
-  message: string;
+  head: string;
+  bodyBullets: string[];
 }> = [
   {
     branch: "feature/user-auth",
@@ -54,7 +85,12 @@ const EXAMPLES: Array<{
 +  if (!user || !await bcrypt.compare(password, user.hash)) throw new Error("Invalid credentials");
 +  return generateToken(user.id);
 +}`,
-    message: "feat(auth): add loginUser function with credential validation\n\n- Validates email and password against db\n- Compares password hash using bcrypt\n- Returns JWT token on success",
+    head: "feat(auth): add loginUser function with credential validation",
+    bodyBullets: [
+      "Validates email and password against db",
+      "Compares password hash using bcrypt",
+      "Returns JWT token on success",
+    ],
   },
   {
     branch: "fix/parser-bounds",
@@ -65,7 +101,8 @@ const EXAMPLES: Array<{
     diff: `diff --git a/src/lib/parser.ts b/src/lib/parser.ts
 -  if (i < arr.length) {
 +  if (i <= arr.length) {`,
-    message: "fix(parser): correct off-by-one error in array bounds check",
+    head: "fix(parser): correct off-by-one error in array bounds check",
+    bodyBullets: [],
   },
   {
     branch: "docs/update-readme",
@@ -75,7 +112,8 @@ const EXAMPLES: Array<{
 +\`\`\`bash
 +npm install my-tool -g
 +\`\`\``,
-    message: "docs(readme): add global installation instructions",
+    head: "docs(readme): add global installation instructions",
+    bodyBullets: [],
   },
   {
     branch: "fix/model-storage-path",
@@ -86,7 +124,11 @@ const EXAMPLES: Array<{
     diff: `diff --git a/src/config/paths.ts b/src/config/paths.ts
 -const DATA_DIR = path.join(process.cwd(), "data");
 +const DATA_DIR = path.join(os.homedir(), ".my-tool", "data");`,
-    message: "fix(paths): resolve data dir relative to home for global installs",
+    head: "fix(paths): resolve data dir relative to home for global installs",
+    bodyBullets: [
+      "Previously used cwd, which broke when installed globally",
+      "Now resolves against the user's home directory instead",
+    ],
   },
   {
     branch: "chore/add-ci",
@@ -100,7 +142,8 @@ const EXAMPLES: Array<{
 +    steps:
 +      - uses: actions/checkout@v4
 +      - run: npm ci && npm test`,
-    message: "ci: add GitHub Actions workflow for build and test",
+    head: "ci: add GitHub Actions workflow for build and test",
+    bodyBullets: [],
   },
   {
     branch: "perf/reduce-db-queries",
@@ -115,17 +158,25 @@ const EXAMPLES: Array<{
 +    "SELECT u.*, r.name as role FROM users u LEFT JOIN roles r ON r.user_id = u.id WHERE u.id = ?",
 +    [id]
 +  );`,
-    message: "perf(db): replace N+1 queries with single JOIN on user fetch",
+    head: "perf(db): replace N+1 queries with single JOIN on user fetch",
+    bodyBullets: [
+      "Previously issued a separate query for user and roles",
+      "Now fetches both in a single LEFT JOIN, cutting round trips in half",
+    ],
   },
 ];
 
 /**
- * Regex for validating Conventional Commits format.
- * Exported so the AI worker can validate the model's raw output before
- * sending it back to the parent process.
+ * Regex for validating the HEAD line's Conventional Commits format.
+ * Exported so lib/commit-message.ts can validate the model's raw output.
  */
 export const CC_REGEX =
   /^(feat|fix|refactor|perf|docs|style|test|chore|build|ci|revert)(\(.+\))?: .+/;
+
+function renderExampleOutput(head: string, bodyBullets: string[]): string {
+  const bodyBlock = bodyBullets.map((b) => `- ${b}`).join("\n");
+  return [head, BODY_SENTINEL, bodyBlock].join("\n");
+}
 
 export function getSystemPrompt(): string {
   const examplesBlock = EXAMPLES.map((ex) => {
@@ -137,7 +188,7 @@ export function getSystemPrompt(): string {
       `BRANCH: ${ex.branch}`,
       `RECENT COMMITS:\n${commitsBlock}`,
       `DIFF:\n${ex.diff}`,
-      `OUTPUT: ${ex.message}`,
+      `OUTPUT:\n${renderExampleOutput(ex.head, ex.bodyBullets)}`,
     ].join("\n");
   }).join("\n\n");
 
@@ -180,7 +231,7 @@ export function getUserPrompt(
       : "  (no prior commits — this may be the first commit)";
 
   return [
-    "Analyze the context below and output ONLY the commit message:",
+    "Analyze the context below and output ONLY the structure described in the system prompt:",
     "",
     `BRANCH: ${branch}`,
     "",

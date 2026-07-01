@@ -1,4 +1,8 @@
 import { execSync, execFileSync } from "node:child_process";
+import {
+  buildGitCommitArgs,
+  type ParsedCommitMessage,
+} from "./commit-message.js";
 
 /**
  * Plumbing check to ensure the tool is executing inside a live Git repository
@@ -95,13 +99,20 @@ export function getRecentCommits(count = 5): string[] {
 }
 
 /**
- * Executes the final commit.
+ * Executes the final commit as:
+ *   git commit -m "<head>" -m "<body>"
+ * (or just -m "<head>" when there's no body).
+ *
+ * Takes the already-parsed { head, body } rather than a flat string so the
+ * two parts stay as separate -m arguments — that's what gives you a proper
+ * subject/body split in `git log` instead of one squashed paragraph.
  * Uses execFileSync with an args array to bypass the shell entirely,
  * preventing any shell-injection via the commit message content.
  */
-export function executeCommit(message: string) {
+export function executeCommit(parsed: ParsedCommitMessage) {
   try {
-    execFileSync("git", ["commit", "-m", message], { stdio: "inherit" });
+    const args = buildGitCommitArgs(parsed);
+    execFileSync("git", args, { stdio: "inherit" });
     return true;
   } catch {
     throw new Error("Failed to finalize Git commit object.");

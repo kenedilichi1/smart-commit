@@ -11,6 +11,68 @@ import {
   executeCommit,
 } from "../lib/git.js";
 import { generateCommitMessage } from "../lib/ai.js";
+import { CC_REGEX } from "../prompts/commit.js";
+import type { ParsedCommitMessage } from "../lib/commit-message.js";
+
+/**
+ * Renders a { head, body } pair the same way whether it came from the model
+ * or was typed by hand, so the "suggested" preview and the final "logged"
+ * confirmation always look identical.
+ */
+function formatMessagePreview(parsed: ParsedCommitMessage): string {
+  if (parsed.body.length === 0) return parsed.head;
+  const indentedBody = parsed.body
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+  return `${parsed.head}\n${indentedBody}`;
+}
+
+/**
+ * Interactively collects a hand-typed head + optional bullet body.
+ * Body collection stops on the first blank line. Returns null if the user
+ * cancels by leaving the head empty.
+ */
+async function promptForCustomMessage(
+  rl: ReturnType<typeof createInterface>,
+  fallbackHead: string,
+): Promise<ParsedCommitMessage | null> {
+  console.log(
+    styleText(
+      "dim",
+      `\nLeave empty to cancel. Current suggestion: "${fallbackHead}"`,
+    ),
+  );
+
+  const headAnswer = await rl.question(
+    styleText("cyan", "Enter your commit head: \n> "),
+  );
+  const head = headAnswer.trim();
+
+  if (head === "") return null;
+
+  console.log(
+    styleText(
+      "dim",
+      "\nEnter body bullet points one per line (blank line to finish, or just hit enter to skip):",
+    ),
+  );
+
+  const bodyLines: string[] = [];
+  // Keep reading lines until the user submits an empty one.
+  for (;;) {
+    const line = await rl.question(styleText("cyan", "> "));
+    if (line.trim() === "") break;
+    const trimmed = line.trim();
+    bodyLines.push(trimmed.startsWith("-") ? trimmed : `- ${trimmed}`);
+  }
+
+  return {
+    head,
+    body: bodyLines.join("\n"),
+    headValid: CC_REGEX.test(head),
+  };
+}
 
 export async function commitCommand() {
   // Precondition checks — throw so the top-level handler in index.ts
@@ -72,11 +134,12 @@ export async function commitCommand() {
   process.on("SIGTERM", cleanupAndExit);
 
   // Await the background inference — throws on timeout, crash, or bad output.
-  const aiMessage = await aiPromise;
+  // Resolves to { head, body, headValid }.
+  const aiMessage: ParsedCommitMessage = await aiPromise;
 
   // Display the suggested output cleanly to the user
-  const styledMessage = styleText("green", `"${aiMessage}"`);
-  console.log(`\n👉 Suggested Message: ${styledMessage}\n`);
+  const styledMessage = styleText("green", formatMessagePreview(aiMessage));
+  console.log(`\n👉 Suggested Message:\n${styledMessage}\n`);
 
   // Instantiate an async readline interface bound to the terminal IO streams.
   const rl = createInterface({ input, output });
@@ -91,26 +154,18 @@ export async function commitCommand() {
       confirmAnswer.trim().toLowerCase() !== "n" &&
       confirmAnswer.trim().toLowerCase() !== "no";
 
-    let finalMessage = aiMessage;
+    let finalMessage: ParsedCommitMessage = aiMessage;
 
     if (!isApproved) {
-      console.log(
-        styleText(
-          "dim",
-          `\nLeave empty to cancel. Current default placeholder: "${aiMessage}"`,
-        ),
-      );
-      const textAnswer = await rl.question(
-        styleText("cyan", "Enter your custom commit message: \n> "),
-      );
+      const custom = await promptForCustomMessage(rl, aiMessage.head);
 
-      finalMessage = textAnswer.trim();
-
-      if (finalMessage === "") {
+      if (custom === null) {
         console.log(styleText("yellow", "\n👋 Commit canceled."));
         rl.close();
         return; // Return cleanly — let index.ts exit normally (code 0)
       }
+
+      finalMessage = custom;
     }
 
     // Release the stdin handle before executing the commit
@@ -121,7 +176,7 @@ export async function commitCommand() {
     executeCommit(finalMessage);
 
     console.log(styleText("green", `\n🎉 Commit created successfully!`));
-    console.log(`Logged Message: "${finalMessage}"\n`);
+    console.log(`Logged Message:\n${formatMessagePreview(finalMessage)}\n`);
   } catch (err) {
     // Ensure the terminal stream is safely released even on unexpected throws
     rl.close();

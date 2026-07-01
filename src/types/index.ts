@@ -4,9 +4,12 @@
  * type system full narrowing power on both ends of the channel.
  */
 export type WorkerMessage =
-  | { type: "status"; event: "download_started" | "download_finished" | "inference_started" }
+  | {
+      type: "status";
+      event: "download_started" | "download_finished" | "inference_started";
+    }
   | { type: "progress"; percent: number }
-  | { type: "success"; message: string }
+  | { type: "success"; head: string; body: string }
   | { type: "error"; error: string };
 
 /**
