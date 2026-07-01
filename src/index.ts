@@ -16,8 +16,8 @@ const { values } = parseArgs({
 
 // Handle help documentation natively
 if (values.help) {
-  console.log(styleText("cyan", "\n🤖 AI Commit CLI"));
-  console.log("\nUsage:\n  ai-commit");
+  console.log(styleText("cyan", "\n🤖 Smart Commit CLI"));
+  console.log("\nUsage:\n  smart-commit");
   console.log(
     "\nOptions:\n  -h, --help     Show this help documentation\n  -v, --version  Show current version",
   );

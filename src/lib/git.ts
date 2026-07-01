@@ -62,6 +62,39 @@ export function getStagedDiff() {
 }
 
 /**
+ * Returns the current branch name (e.g. "feature/user-auth").
+ * Falls back to "unknown" on detached HEAD or bare repositories.
+ */
+export function getBranchName(): string {
+  try {
+    return execSync("git rev-parse --abbrev-ref HEAD", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Returns the last `count` commit messages as one-line strings
+ * (hash + subject), e.g. ["a1b2c3 feat(auth): add login"].
+ * Gives the model a style reference for the project's existing commit conventions.
+ * Returns an empty array if there are no commits yet or git fails.
+ */
+export function getRecentCommits(count = 5): string[] {
+  try {
+    const output = execSync(`git log --oneline -${count}`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output.trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Executes the final commit.
  * Uses execFileSync with an args array to bypass the shell entirely,
  * preventing any shell-injection via the commit message content.

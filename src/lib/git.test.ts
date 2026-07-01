@@ -1,102 +1,136 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// ---------------------------------------------------------------------------
+// Mock the entire child_process module BEFORE importing the units under test.
+// This ensures the real git binary is never invoked during test runs.
+// ---------------------------------------------------------------------------
+vi.mock("node:child_process", () => ({
+  execSync: vi.fn(),
+  execFileSync: vi.fn(),
+}));
+
 import { execSync, execFileSync } from "node:child_process";
+import {
+  isGitRepository,
+  hasStagedChanges,
+  getStagedDiff,
+  executeCommit,
+} from "./git.js";
 
 // ---------------------------------------------------------------------------
-// We inject the exec functions so we can swap them for mocks in tests,
-// keeping the tests hermetic — no real git processes are spawned.
-// ---------------------------------------------------------------------------
-
-// Re-export injectable versions of each function under test.
-// (In a real app these would be the actual exported overloads; here we
-// duplicate the logic inline to demonstrate the pattern clearly.)
-
-function isGitRepository(exec = execSync): boolean {
-  try {
-    const result = exec("git rev-parse --is-inside-work-tree", {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-    }) as string;
-    return result.trim() === "true";
-  } catch {
-    return false;
-  }
-}
-
-function hasStagedChanges(exec = execSync): boolean {
-  try {
-    const output = exec("git diff --cached --name-only", {
-      encoding: "utf8",
-    }) as string;
-    return output.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-
-function getStagedDiff(exec = execFileSync): string {
-  try {
-    return (
-      exec("git", ["diff", "--cached", "--", "."], { encoding: "utf8" }) as string
-    ).trim();
-  } catch {
-    throw new Error("Failed to read Git staged index pipeline.");
-  }
-}
-
+// isGitRepository
 // ---------------------------------------------------------------------------
 
 describe("isGitRepository", () => {
-  it("returns true when exec outputs 'true'", () => {
-    const mockExec = vi.fn().mockReturnValue("true\n");
-    expect(isGitRepository(mockExec as unknown as typeof execSync)).toBe(true);
+  beforeEach(() => vi.resetAllMocks());
+
+  it("returns true when git outputs 'true'", () => {
+    vi.mocked(execSync).mockReturnValue("true\n" as never);
+    expect(isGitRepository()).toBe(true);
   });
 
-  it("returns false when exec throws (not in a repo)", () => {
-    const mockExec = vi.fn().mockImplementation(() => {
-      throw new Error("not a git repo");
+  it("returns false when git throws (not inside a repo)", () => {
+    vi.mocked(execSync).mockImplementation(() => {
+      throw new Error("fatal: not a git repository");
     });
-    expect(isGitRepository(mockExec as unknown as typeof execSync)).toBe(false);
+    expect(isGitRepository()).toBe(false);
   });
 
-  it("returns false when exec output is not 'true'", () => {
-    const mockExec = vi.fn().mockReturnValue("false\n");
-    expect(isGitRepository(mockExec as unknown as typeof execSync)).toBe(false);
+  it("returns false when git output is not 'true'", () => {
+    vi.mocked(execSync).mockReturnValue("false\n" as never);
+    expect(isGitRepository()).toBe(false);
   });
 });
 
+// ---------------------------------------------------------------------------
+// hasStagedChanges
+// ---------------------------------------------------------------------------
+
 describe("hasStagedChanges", () => {
-  it("returns true when there are staged file names", () => {
-    const mockExec = vi.fn().mockReturnValue("src/index.ts\n");
-    expect(hasStagedChanges(mockExec as unknown as typeof execSync)).toBe(true);
+  beforeEach(() => vi.resetAllMocks());
+
+  it("returns true when staged file names are present", () => {
+    vi.mocked(execSync).mockReturnValue("src/index.ts\n" as never);
+    expect(hasStagedChanges()).toBe(true);
   });
 
   it("returns false when output is empty (nothing staged)", () => {
-    const mockExec = vi.fn().mockReturnValue("");
-    expect(hasStagedChanges(mockExec as unknown as typeof execSync)).toBe(false);
+    vi.mocked(execSync).mockReturnValue("" as never);
+    expect(hasStagedChanges()).toBe(false);
   });
 
-  it("returns false when exec throws", () => {
-    const mockExec = vi.fn().mockImplementation(() => {
+  it("returns false when git throws", () => {
+    vi.mocked(execSync).mockImplementation(() => {
       throw new Error("git error");
     });
-    expect(hasStagedChanges(mockExec as unknown as typeof execSync)).toBe(false);
+    expect(hasStagedChanges()).toBe(false);
   });
 });
 
+// ---------------------------------------------------------------------------
+// getStagedDiff
+// ---------------------------------------------------------------------------
+
 describe("getStagedDiff", () => {
-  it("returns trimmed diff output", () => {
-    const mockExec = vi.fn().mockReturnValue("  diff --git a/foo.ts\n  ");
-    expect(getStagedDiff(mockExec as unknown as typeof execFileSync)).toBe(
-      "diff --git a/foo.ts",
+  beforeEach(() => vi.resetAllMocks());
+
+  it("returns trimmed diff output on success", () => {
+    vi.mocked(execFileSync).mockReturnValue(
+      "  diff --git a/foo.ts\n  " as never,
+    );
+    expect(getStagedDiff()).toBe("diff --git a/foo.ts");
+  });
+
+  it("throws a readable error when git fails", () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error("git error");
+    });
+    expect(() => getStagedDiff()).toThrow(
+      "Failed to read Git staged index pipeline.",
     );
   });
 
-  it("throws a readable error when exec fails", () => {
-    const mockExec = vi.fn().mockImplementation(() => {
+  it("passes the correct lock-file exclusion args to git", () => {
+    vi.mocked(execFileSync).mockReturnValue("" as never);
+    getStagedDiff();
+
+    const [cmd, args] = vi.mocked(execFileSync).mock.calls[0] as [
+      string,
+      string[],
+    ];
+    expect(cmd).toBe("git");
+    expect(args).toContain(":(exclude)pnpm-lock.yaml");
+    expect(args).toContain(":(exclude)package-lock.json");
+    expect(args).toContain(":(exclude)yarn.lock");
+    expect(args).toContain(":(exclude)dist/*");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executeCommit
+// ---------------------------------------------------------------------------
+
+describe("executeCommit", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("calls git commit with the message as a discrete argument (no shell injection risk)", () => {
+    vi.mocked(execFileSync).mockReturnValue("" as never);
+    executeCommit("feat(auth): add login");
+
+    const [cmd, args] = vi.mocked(execFileSync).mock.calls[0] as [
+      string,
+      string[],
+    ];
+    expect(cmd).toBe("git");
+    expect(args).toEqual(["commit", "-m", "feat(auth): add login"]);
+  });
+
+  it("throws a readable error when git commit fails", () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error("git error");
     });
-    expect(() =>
-      getStagedDiff(mockExec as unknown as typeof execFileSync),
-    ).toThrow("Failed to read Git staged index pipeline.");
+    expect(() => executeCommit("feat: something")).toThrow(
+      "Failed to finalize Git commit object.",
+    );
   });
 });

@@ -4,3 +4,4 @@ models
 *.js.map
 *.d.ts
 *.d.ts.map
+.env

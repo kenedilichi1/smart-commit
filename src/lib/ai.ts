@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { styleText } from "node:util";
-import type { WorkerMessage } from "../types/index.js";
+import type { WorkerMessage, WorkerInput } from "../types/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,9 +26,21 @@ export interface CommitMessageHandle {
  * Returns both the result promise and a kill() handle so callers
  * can terminate the worker on SIGINT/SIGTERM without leaking the process.
  */
-export function generateCommitMessage(diff: string): CommitMessageHandle {
+export function generateCommitMessage(input: WorkerInput): CommitMessageHandle {
   let child: ChildProcess | null = null;
   let timeoutId: NodeJS.Timeout | null = null;
+  let spinnerId: NodeJS.Timeout | null = null;
+
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let frameIndex = 0;
+
+  const stopSpinner = () => {
+    if (spinnerId) {
+      clearInterval(spinnerId);
+      process.stdout.write("\r\x1b[K"); // Clear the line
+      spinnerId = null;
+    }
+  };
 
   const promise = new Promise<string>((resolve, reject) => {
     const workerPath = path.join(__dirname, "../workers/ai-worker.js");
@@ -50,10 +62,11 @@ export function generateCommitMessage(diff: string): CommitMessageHandle {
 
     const cleanup = () => {
       if (timeoutId) clearTimeout(timeoutId);
+      stopSpinner();
     };
 
-    // Pass the raw diff payload into the child process memory space
-    child.send({ diff });
+    // Pass the full context payload into the child process memory space.
+    child.send(input);
 
     // Listen to incoming IPC communications from the worker.
     // The switch is exhaustive over the WorkerMessage union.
@@ -74,6 +87,13 @@ export function generateCommitMessage(diff: string): CommitMessageHandle {
                 "\n✅ Engine downloaded successfully and initialized!\n",
               ),
             );
+          } else if (message.event === "inference_started") {
+            spinnerId = setInterval(() => {
+              process.stdout.write(
+                styleText("cyan", `\r${frames[frameIndex]} Generating commit message...`)
+              );
+              frameIndex = (frameIndex + 1) % frames.length;
+            }, 80);
           }
           break;
 
