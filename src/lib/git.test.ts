@@ -16,6 +16,7 @@ import {
   getStagedDiff,
   executeCommit,
 } from "./git.js";
+import type { ParsedCommitMessage } from "./commit-message.js";
 
 // ---------------------------------------------------------------------------
 // isGitRepository
@@ -115,21 +116,55 @@ describe("executeCommit", () => {
 
   it("calls git commit with the message as a discrete argument (no shell injection risk)", () => {
     vi.mocked(execFileSync).mockReturnValue("" as never);
-    executeCommit("feat(auth): add login");
+    const parsed: ParsedCommitMessage = {
+      head: "feat(auth): add login",
+      body: "",
+      headValid: true,
+    };
+    executeCommit(parsed);
 
     const [cmd, args] = vi.mocked(execFileSync).mock.calls[0] as [
       string,
       string[],
     ];
     expect(cmd).toBe("git");
+    // buildGitCommitArgs omits the body -m when body is empty
     expect(args).toEqual(["commit", "-m", "feat(auth): add login"]);
+  });
+
+  it("includes the body as a second -m argument when body is non-empty", () => {
+    vi.mocked(execFileSync).mockReturnValue("" as never);
+    const parsed: ParsedCommitMessage = {
+      head: "feat(auth): add login",
+      body: "- adds JWT-based login flow",
+      headValid: true,
+    };
+    executeCommit(parsed);
+
+    const [cmd, args] = vi.mocked(execFileSync).mock.calls[0] as [
+      string,
+      string[],
+    ];
+    expect(cmd).toBe("git");
+    expect(args).toEqual([
+      "commit",
+      "-m",
+      "feat(auth): add login",
+      "-m",
+      "- adds JWT-based login flow",
+    ]);
   });
 
   it("throws a readable error when git commit fails", () => {
     vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error("git error");
     });
-    expect(() => executeCommit("feat: something")).toThrow(
+    const parsed: ParsedCommitMessage = {
+      head: "feat: something",
+      body: "",
+      headValid: true,
+    };
+    expect(() => executeCommit(parsed)).toThrow(
       "Failed to finalize Git commit object.",
     );
   });

@@ -5,7 +5,8 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 
-import { getSystemPrompt, getUserPrompt, CC_REGEX } from "../prompts/commit.js";
+import { getSystemPrompt, getUserPrompt } from "../prompts/commit.js";
+import { parseCommitMessage } from "../lib/commit-message.js";
 import type { WorkerMessage, WorkerInput } from "../types/index.js";
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ async function downloadModelIfMissing(): Promise<void> {
     downloadedBytes += chunk.length;
     if (totalBytes > 0) {
       // Send percent as a number — the parent process formats the display string.
-      const percent = parseFloat(
+      const percent = Number.parseFloat(
         ((downloadedBytes / totalBytes) * 100).toFixed(1),
       );
       send({ type: "progress", percent });
@@ -82,18 +83,6 @@ async function downloadModelIfMissing(): Promise<void> {
   }
 
   send({ type: "status", event: "download_finished" });
-}
-
-/**
- * Cleans and validates the raw LLM output.
- * - Takes only the first line (guards against multi-line hallucinations)
- * - Returns null if the result doesn't match Conventional Commits format
- */
-function parseModelOutput(raw: string): string | null {
-  const rawTrimmed = raw.trim();
-  const firstLine = rawTrimmed.split("\n")[0]?.trim() ?? "";
-  if (!CC_REGEX.test(firstLine)) return null;
-  return rawTrimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,17 +114,17 @@ process.on("message", async (message: WorkerInput) => {
       },
     );
 
-    const commitMessage = parseModelOutput(rawResponse);
+    const parsed = parseCommitMessage(rawResponse);
 
-    if (!commitMessage) {
-      // Model produced output that doesn't look like a valid commit message.
+    if (!parsed.headValid) {
+      // Model produced a head that doesn't look like a valid commit message.
       // Surface the raw output so the caller can fall back gracefully.
       throw new Error(
         `Model produced an invalid commit message format: "${rawResponse.trim()}"`,
       );
     }
 
-    send({ type: "success", message: commitMessage });
+    send({ type: "success", head: parsed.head, body: parsed.body });
     process.exit(0);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

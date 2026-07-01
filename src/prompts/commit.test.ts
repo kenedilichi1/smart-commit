@@ -129,7 +129,7 @@ describe("getSystemPrompt", () => {
 
   it("instructs the model to output nothing except the commit line", () => {
     const prompt = getSystemPrompt();
-    expect(prompt.toLowerCase()).toContain("nothing else");
+    expect(prompt.toLowerCase()).toContain("no extra commentary");
   });
 
   it("includes branch-based scope inference rule", () => {
