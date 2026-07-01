@@ -6,6 +6,8 @@ import {
   isGitRepository,
   hasStagedChanges,
   getStagedDiff,
+  getBranchName,
+  getRecentCommits,
   executeCommit,
 } from "../lib/git.js";
 import { generateCommitMessage } from "../lib/ai.js";
@@ -18,10 +20,24 @@ export async function commitCommand() {
   }
 
   if (!hasStagedChanges()) {
-    throw new Error("No staged changes found. Run 'git add' on your files first.");
+    throw new Error(
+      "No staged changes found. Run 'git add' on your files first.",
+    );
   }
 
   const diff = getStagedDiff();
+  const branch = getBranchName();
+  const recentCommits = getRecentCommits(5);
+
+  // Guard against accidentally staged large binary files (images, build artefacts, etc.)
+  // that would flood IPC memory without adding meaningful signal for the model.
+  const MAX_DIFF_BYTES = 500_000; // 500 KB
+  if (Buffer.byteLength(diff, "utf8") > MAX_DIFF_BYTES) {
+    throw new Error(
+      `Staged diff is too large (${(Buffer.byteLength(diff, "utf8") / 1024).toFixed(0)} KB) for AI analysis.\n` +
+        `Consider staging fewer files at once, or unstaging large binary/generated files.`,
+    );
+  }
 
   console.log(
     styleText(
@@ -31,7 +47,11 @@ export async function commitCommand() {
   );
 
   // Obtain both the result promise and a direct kill handle for the worker.
-  const { promise: aiPromise, kill: killWorker } = generateCommitMessage(diff);
+  const { promise: aiPromise, kill: killWorker } = generateCommitMessage({
+    diff,
+    branch,
+    recentCommits,
+  });
 
   // Ensure Ctrl+C kills the forked LLM worker before exiting.
   // Replace the default SIGINT handler only for the duration of inference.

@@ -4,12 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
-import { fileURLToPath } from "node:url";
 
 import { getSystemPrompt, getUserPrompt, CC_REGEX } from "../prompts/commit.js";
-import type { WorkerMessage } from "../types/index.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import type { WorkerMessage, WorkerInput } from "../types/index.js";
 
 // ---------------------------------------------------------------------------
 // Model storage — XDG-compliant on Linux, ~/.smart-commit on other platforms.
@@ -18,13 +15,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 const MODELS_DIR = resolveModelsDir();
 
-console.log(MODELS_DIR);
 function resolveModelsDir(): string {
   const xdgData = process.env["XDG_DATA_HOME"];
   if (xdgData) {
     return path.join(xdgData, "smart-commit", "models");
   }
-  return path.join(os.homedir(), "web_workspace", "smart_commit", "models");
+  return path.join(os.homedir(), ".local", "share", "smart-commit", "models");
 }
 
 const MODEL_NAME = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
@@ -54,7 +50,10 @@ async function downloadModelIfMissing(): Promise<void> {
   );
   let downloadedBytes = 0;
 
-  const fileStream = fs.createWriteStream(MODEL_PATH);
+  // Write to a .tmp file first so an interrupted download never leaves a
+  // corrupt .gguf on disk. On success we atomically rename to the real path.
+  const tmpPath = MODEL_PATH + ".tmp";
+  const fileStream = fs.createWriteStream(tmpPath);
 
   if (!response.body) {
     throw new Error("Response body is empty");
@@ -73,7 +72,15 @@ async function downloadModelIfMissing(): Promise<void> {
     }
   });
 
-  await finished(bodyStream.pipe(fileStream));
+  try {
+    await finished(bodyStream.pipe(fileStream));
+    fs.renameSync(tmpPath, MODEL_PATH);
+  } catch (err) {
+    // Clean up the partial file so the next run re-triggers a fresh download.
+    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    throw err;
+  }
+
   send({ type: "status", event: "download_finished" });
 }
 
@@ -83,16 +90,17 @@ async function downloadModelIfMissing(): Promise<void> {
  * - Returns null if the result doesn't match Conventional Commits format
  */
 function parseModelOutput(raw: string): string | null {
-  const firstLine = raw.trim().split("\n")[0]?.trim() ?? "";
+  const rawTrimmed = raw.trim();
+  const firstLine = rawTrimmed.split("\n")[0]?.trim() ?? "";
   if (!CC_REGEX.test(firstLine)) return null;
-  return firstLine;
+  return rawTrimmed;
 }
 
 // ---------------------------------------------------------------------------
 // Listen for the payload from the parent process
 // ---------------------------------------------------------------------------
-process.on("message", async (message: { diff: string }) => {
-  const { diff } = message;
+process.on("message", async (message: WorkerInput) => {
+  const { diff, branch, recentCommits } = message;
   try {
     await downloadModelIfMissing();
 
@@ -107,10 +115,15 @@ process.on("message", async (message: { diff: string }) => {
       systemPrompt: getSystemPrompt(),
     });
 
-    const rawResponse = await session.prompt(getUserPrompt(diff), {
-      maxTokens: 80,
-      temperature: 0.2,
-    });
+    send({ type: "status", event: "inference_started" });
+
+    const rawResponse = await session.prompt(
+      getUserPrompt(diff, branch, recentCommits),
+      {
+        maxTokens: 250,
+        temperature: 0.2,
+      },
+    );
 
     const commitMessage = parseModelOutput(rawResponse);
 
